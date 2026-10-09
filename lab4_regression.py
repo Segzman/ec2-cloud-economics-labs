@@ -4,9 +4,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 import seaborn as sns
 import streamlit as st
 from sklearn.linear_model import LinearRegression
+from sklearn.compose import TransformedTargetRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
 
@@ -109,16 +111,21 @@ with regression:
     st.subheader("Predict On-Demand Hourly Price")
     st.write("Predictors: memory in GiB and vCPU count. Target: Linux on-demand USD/hour.")
     training_data = data.dropna(subset=["On Demand", "Instance Memory", "vCPUs"])
-    X = training_data[["Instance Memory", "vCPUs"]]
+    training_data = training_data[training_data["On Demand"] > 0]
+    X = np.log(training_data[["Instance Memory", "vCPUs"]])
     y = training_data["On Demand"]
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = LinearRegression().fit(X_train, y_train)
+    model = TransformedTargetRegressor(
+        regressor=LinearRegression(), func=np.log, inverse_func=np.exp,
+    ).fit(X_train, y_train)
     predictions = model.predict(X_test)
     mae = mean_absolute_error(y_test, predictions)
     mse = mean_squared_error(y_test, predictions)
     rmse = mse ** 0.5
     st.write(f"Usable rows: {len(X)} · Training: {len(X_train)} · Test: {len(X_test)} · Seed: 42")
-    st.code(f"Hourly price = {model.intercept_:.6f} + ({model.coef_[0]:.6f} × memory GiB) + ({model.coef_[1]:.6f} × vCPUs)")
+    fitted = model.regressor_
+    st.code(f"Hourly price = exp({fitted.intercept_:.6f} + ({fitted.coef_[0]:.6f} × log(memory GiB)) + ({fitted.coef_[1]:.6f} × log(vCPUs)))")
+    st.caption("The model fits log(price) from log(memory) and log(vCPUs), then exponentiates predictions to keep prices positive. Evaluation below uses USD/hour predictions.")
     c1, c2, c3 = st.columns(3)
     c1.metric("MAE (USD/hour)", f"{mae:.4f}")
     c2.metric("MSE (squared USD/hour)", f"{mse:.4f}")
@@ -141,9 +148,7 @@ with regression:
     memory = st.number_input("Memory (GiB)", min_value=0.5, value=4.0, step=0.5)
     cpus = st.number_input("vCPUs", min_value=1, value=2, step=1)
     new = pd.DataFrame({"Instance Memory": [memory], "vCPUs": [cpus]})
-    prediction = float(model.predict(new)[0])
+    prediction = float(model.predict(np.log(new))[0])
     st.metric("Predicted On-Demand Cost (USD/hour)", f"${prediction:.4f}")
-    if prediction < 0:
-        st.warning("The model returned a negative price. This is an invalid price and a limitation of unconstrained linear regression.")
     st.caption("This two-feature baseline omits instance family, architecture, accelerators, storage, and network. Predictions are educational estimates, not verified AWS quotes.")
     st.download_button("Download Test Predictions", results.to_csv(index=False), "ec2_test_predictions.csv", "text/csv")
